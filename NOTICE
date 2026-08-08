@@ -1,0 +1,43 @@
+DisplayMixer
+===========
+
+一个轻量 macOS 菜单栏工具：用 DDC/CI 调节外接显示器的亮度/音量/静音，
+并用 CoreAudio 进程 Tap 调节每个 App 的独立音量。
+
+开源组件来源与许可
+------------------
+
+本项目的音频引擎（每 App 音量）与 DDC/CI 传输层改编自 **MacMix**：
+
+  Repository : https://github.com/ljmng7/MacMix
+  License    : MIT
+  Files      : AppAudioMixer.swift, CoreAudioHardware.swift, AudioModels.swift
+               (DDCController.swift 中的 IOKit/IOAV I2C 传输亦改编自 MacMix 的
+                DisplayVolumeController.swift)
+
+MacMix 的 DDC/CI 数据包处理与 IOKit 传输基于 MCCS 协议及 MIT 许可的
+MonitorControl 项目（https://github.com/MonitorControl/MonitorControl）。
+
+按 MIT 许可要求，保留上述原始版权与许可声明。本项目其余代码以相同 MIT 许可发布。
+
+MIT License (MacMix)
+--------------------
+Copyright (c) 2026 Jazmin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>DisplayMixer</string>
+    <key>CFBundleDisplayName</key>
+    <string>DisplayMixer</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.jianghongliang.DisplayMixer</string>
+    <key>CFBundleExecutable</key>
+    <string>DisplayMixer</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.4</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>DisplayMixer 需要「屏幕录制」权限来独立调节每个 App 的音量。macOS 用该权限网关控音频进程拦截（即使只处理声音也需要），不开启则无法使用「App 音量」功能。</string>
+</dict>
+</plist>
