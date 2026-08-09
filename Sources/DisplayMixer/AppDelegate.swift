@@ -78,17 +78,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 button.image = img
             }
         }
-        item.menu = NSMenu()
+        let menu = NSMenu()
+        // SliderMenuItem uses a custom view and has no menu action. Disable
+        // AppKit's selector-based auto-enabling so usable sliders are never
+        // painted as disabled during menu refreshes.
+        menu.autoenablesItems = false
+        item.menu = menu
         item.menu?.delegate = self
         statusItem = item
 
-        // 每次启动都重新预检无障碍和录屏权限，避免沿用旧的内存状态。
+        // 每次启动检查录屏权限，避免沿用旧的内存状态。
         Task { @MainActor in
-            let accessibilityGranted = AXIsProcessTrusted()
             permissionState = (await audio.hasPermission()) ? .granted : .denied
-            if !accessibilityGranted {
-                NSLog("DisplayMixer: 启动检查发现无障碍权限未授予，键盘监听将保持放行状态。")
-            }
             rebuild()
         }
 
@@ -207,6 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for item in menu.items {
             if let sm = item as? SliderMenuItem {
                 sm.setTotalWidth(target)
+                sm.isEnabled = true
             }
         }
     }
@@ -274,7 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func addBrightnessControl(_ menu: NSMenu, _ display: ExternalDisplay) {
         let value = ConfigStore.shared.displayBrightness(for: display.identity)
-        addSlider(menu, title: "亮度", value: value, continuous: true) { [weak self] v in
+        addSlider(menu, title: "亮度", value: value, continuous: true, snapValue: 0.75, snapThreshold: 0.03) { [weak self] v in
             ConfigStore.shared.setDisplayBrightness(display.identity, v)
             self?.ddc.setBrightness(display: display, fraction: v)
         }
@@ -286,9 +288,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             ConfigStore.shared.setDisplayVolume(display.identity, v)
             // 动音量即视为取消静音
+            let wasMuted = self.primaryMuted
             self.primaryMuted = false
             let dev = CoreAudioVolume.shared.defaultOutputDevice()
-            self.setDisplayMute(display, muted: false, audioDevice: dev)
+            if wasMuted {
+                self.setDisplayMute(display, muted: false, audioDevice: dev)
+            }
             self.setDisplayVolume(display, fraction: v, audioDevice: dev)
             if self.primaryDisplay?.identity == display.identity {
                 self.updateStatusIcon()
@@ -302,12 +307,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         title: String,
         value: Double,
         continuous: Bool,
+        snapValue: Double? = nil,
+        snapThreshold: Double = 0,
         onChanged: @escaping (Double) -> Void
     ) {
         let item = SliderMenuItem(
             title: title,
             value: value,
             continuous: continuous,
+            snapValue: snapValue,
+            snapThreshold: snapThreshold,
             onChanged: onChanged,
             onInteraction: { [weak self] interacting in
                 self?.interacting = interacting
@@ -469,11 +478,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func wireKeyboard() {
         KeyboardMonitor.shared.onBrightnessUp = { [weak self] useConfiguredStep in
             guard let self else { return false }
-            return MainActor.assumeIsolated { self.kbdBrightness(+self.stepFraction(current: self.primaryBrightnessFraction(), useConfiguredStep: useConfiguredStep)) }
+            // Brightness keys always use the user's configured step. Fine OSD
+            // increments remain available for volume and other controls.
+            return MainActor.assumeIsolated { self.kbdBrightness(+self.stepFraction(current: self.primaryBrightnessFraction(), useConfiguredStep: true)) }
         }
         KeyboardMonitor.shared.onBrightnessDown = { [weak self] useConfiguredStep in
             guard let self else { return false }
-            return MainActor.assumeIsolated { self.kbdBrightness(-self.stepFraction(current: self.primaryBrightnessFraction(), useConfiguredStep: useConfiguredStep)) }
+            return MainActor.assumeIsolated { self.kbdBrightness(-self.stepFraction(current: self.primaryBrightnessFraction(), useConfiguredStep: true)) }
         }
         KeyboardMonitor.shared.onVolumeUp = { [weak self] useConfiguredStep in
             guard let self else { return false }
@@ -490,7 +501,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func kbdBrightness(_ delta: Double) -> Bool {
-        guard let d = primaryDisplay else { return false }
+        guard let d = keyboardTargetDisplay() else { return false }
         let newV = clamp01(ConfigStore.shared.displayBrightness(for: d.identity) + delta)
         guard ddc.setBrightness(display: d, fraction: newV) else {
             refreshMenuIfVisible()
@@ -502,19 +513,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
+    /// Match MonitorControl's default keyboard target: the external display under
+    /// the mouse, with the configured primary display as a fallback.
+    private func keyboardTargetDisplay() -> ExternalDisplay? {
+        let displays = ddc.externalDisplays()
+        let mouse = NSEvent.mouseLocation
+        if let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }),
+           let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+            if let display = displays.first(where: { $0.id == CGDirectDisplayID(number.uint32Value) }) {
+                return display
+            }
+        }
+        return primaryDisplay ?? displays.first
+    }
+
     private func primaryBrightnessFraction() -> Double {
         guard let p = primaryDisplay else { return 0.5 }
         return ConfigStore.shared.displayBrightness(for: p.identity)
     }
 
     private func kbdVolume(_ delta: Double) -> Bool {
-        guard let d = primaryDisplay else { return false }
+        guard let d = keyboardTargetDisplay() else { return false }
         let newV = clamp01(ConfigStore.shared.displayVolume(for: d.identity) + delta)
         ConfigStore.shared.setDisplayVolume(d.identity, newV)
+        let wasMuted = primaryMuted
         primaryMuted = false
         // 选项 B：键盘音量走 CoreAudio 默认输出设备（即显示器音箱）。
         let dev = CoreAudioVolume.shared.defaultOutputDevice()
-        setDisplayMute(d, muted: false, audioDevice: dev)
+        // Unmute only when the previous state was actually muted. Calling the
+        // DDC mute command on every volume step causes duplicate 0x8D/0x62
+        // writes and makes some displays flash their hardware OSD.
+        if wasMuted {
+            setDisplayMute(d, muted: false, audioDevice: dev)
+        }
         setDisplayVolume(d, fraction: newV, audioDevice: dev)
         updateStatusIcon()
         if showOSD { OSDOverlay.shared.show(kind: .volume, level: newV, muted: false) }
@@ -523,7 +554,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func kbdMuteToggle() -> Bool {
-        guard let d = primaryDisplay else { return false }
+        guard let d = keyboardTargetDisplay() else { return false }
         primaryMuted.toggle()
         let dev = CoreAudioVolume.shared.defaultOutputDevice()
         setDisplayMute(d, muted: primaryMuted, audioDevice: dev)
@@ -584,8 +615,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let options = [key: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
 
-        // Rebuild the session tap after the user changes the permission, without
-        // using the HID-level tap that can interfere with the keyboard.
+        // Rebuild the session tap after the user changes the permission.
         KeyboardMonitor.shared.setEnabled(false)
         if ConfigStore.shared.keyboardControlEnabled() {
             KeyboardMonitor.shared.setEnabled(true)

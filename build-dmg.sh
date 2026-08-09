@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="DisplayMixer"
-VERSION="1.0.0"
+VERSION="1.1.0"
 APP_DIR="$ROOT/build/$APP_NAME.app"
 DMG_DIR="$ROOT/build/dmg"
 DMG_PATH="$ROOT/build/$APP_NAME-$VERSION.dmg"
