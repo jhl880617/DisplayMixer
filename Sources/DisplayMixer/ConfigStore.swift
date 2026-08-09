@@ -90,15 +90,7 @@ final class ConfigStore {
         defaults.set(identity, forKey: "primaryDisp")
     }
 
-    // MARK: - OSD & step
-
-    /// 0 = 不显示自定义浮层（安静模式，默认）；1 = 显示自定义浮层。
-    /// 无论此处如何，只要键盘控制开启，媒体键都会被吃掉，macOS 原生浮层始终被屏蔽。
-    /// 未设置时 integer 返回 0，正好对应「安静模式」，因此默认值无需显式写入。
-    var osdMode: Int {
-        get { defaults.integer(forKey: "osdMode") }
-        set { defaults.set(newValue, forKey: "osdMode") }
-    }
+    // MARK: - Keyboard step
 
     /// 键盘/滑块每次调节的步进百分比（可选 1/2/5/10/20），默认 5。
     var stepPercent: Int {

@@ -16,8 +16,6 @@ final class AudioOrchestrator {
 
     private let hardware = CoreAudioHardware()
     private var revision: UInt64 = 0
-    private var routeGeneration: UInt64 = 0
-    private var lastOutputUID: String?
 
     private init() {}
 
@@ -58,16 +56,7 @@ final class AudioOrchestrator {
         hardware.devices(for: .output).first(where: { $0.isCurrent })?.uid
     }
 
-    private func syncRouteGeneration() {
-        let uid = currentOutputDeviceUID()
-        if uid != lastOutputUID {
-            routeGeneration &+= 1
-            lastOutputUID = uid
-        }
-    }
-
     private func submit() {
-        syncRouteGeneration()
         revision &+= 1
 
         let outputDeviceUID = currentOutputDeviceUID()
@@ -81,7 +70,6 @@ final class AudioOrchestrator {
 
         let command = AppMixerCommand(
             revision: revision,
-            routeGeneration: routeGeneration,
             outputDeviceUID: outputDeviceUID,
             targets: targets
         )

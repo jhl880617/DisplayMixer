@@ -51,11 +51,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 菜单当前是否处于打开状态（用于键盘改值时决定是否重建菜单）
     private var menuOpen = false
 
-    /// 是否在调节时显示自定义浮层（默认不显示，安静模式；原生 macOS OSD 始终被屏蔽）。
-    private var showOSD: Bool {
-        ConfigStore.shared.osdMode == 1
-    }
-
     private func stepFraction(current: Double, useConfiguredStep: Bool) -> Double {
         if useConfiguredStep || !ConfigStore.shared.fineStepEnabled {
             return Double(ConfigStore.shared.stepPercent) / 100.0
@@ -162,7 +157,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(.separator())
             menu.addItem(primaryTargetSubmenu())
             menu.addItem(keyboardToggleItem())
-            menu.addItem(osdToggleItem())
             menu.addItem(stepSubmenu())
         }
 
@@ -417,28 +411,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    // MARK: - OSD overlay toggle
-
-    /// 是否在调节时弹出自定义浮层。无论开关，只要「键盘控制」开启，媒体键都会被吃掉，
-    /// 因此 macOS 原生的亮度/音量浮层始终被屏蔽（原生浮层反映的是系统音量/内建屏，
-    /// 与此外接显示器的 DDC 值无关，无意义）。
-    private func osdToggleItem() -> NSMenuItem {
-        let item = NSMenuItem(
-            title: "显示调节浮层（OSD）",
-            action: #selector(toggleOSD(_:)),
-            keyEquivalent: ""
-        )
-        item.state = showOSD ? .on : .off
-        item.target = self
-        return item
-    }
-
-    @objc private func toggleOSD(_ sender: NSMenuItem) {
-        ConfigStore.shared.osdMode = showOSD ? 0 : 1
-        sender.state = showOSD ? .on : .off
-        rebuild()
-    }
-
     // MARK: - Step size
 
     private func stepSubmenu() -> NSMenuItem {
@@ -452,7 +424,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         sub.addItem(.separator())
         let fine = NSMenuItem(
-            title: "使用精细 OSD 步数",
+            title: "使用精细步数",
             action: #selector(toggleFineStep(_:)),
             keyEquivalent: ""
         )
@@ -508,7 +480,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return false
         }
         ConfigStore.shared.setDisplayBrightness(d.identity, newV)
-        if showOSD { OSDOverlay.shared.show(kind: .brightness, level: newV) }
         refreshMenuIfVisible()
         return true
     }
@@ -548,7 +519,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         setDisplayVolume(d, fraction: newV, audioDevice: dev)
         updateStatusIcon()
-        if showOSD { OSDOverlay.shared.show(kind: .volume, level: newV, muted: false) }
         refreshMenuIfVisible()
         return true
     }
@@ -560,9 +530,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setDisplayMute(d, muted: primaryMuted, audioDevice: dev)
         ConfigStore.shared.setDisplayMuted(d.identity, primaryMuted)
         updateStatusIcon()
-        if showOSD {
-            OSDOverlay.shared.show(kind: .volume, level: ConfigStore.shared.displayVolume(for: d.identity), muted: primaryMuted)
-        }
         refreshMenuIfVisible()
         return true
     }
