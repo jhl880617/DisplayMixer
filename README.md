@@ -1,32 +1,41 @@
 # DisplayMixer
 
-DisplayMixer 是一个 macOS 菜单栏工具，用来集中控制外接显示器和应用音频。
+DisplayMixer 是一个 macOS 菜单栏工具，用来接管妙控键盘功能键，集中控制外接显示器亮度和音量。
 
 ## 主要功能
 
 - 通过 DDC/CI 调节外接显示器亮度。
 - 通过 CoreAudio 调节默认显示器音频设备的音量和静音。
 - 使用 F1/F2 调节亮度，使用 F10/F11/F12 调节静音和音量。
-- 为正在播放声音的 App 提供独立音量控制。
+- F11 按到 0 自动进静音；静音状态下按 F10 解除静音并回到 2%。
 - 支持实时拖动显示器亮度和音量滑块。
 - 支持按键步进设置，以及仅用于音量的精细步进。
-- 提供自定义调节浮层、开机自启、权限申请和显示器数值同步。
+- 提供自定义调节浮层、开机自启、辅助功能权限申请和显示器数值同步。
 
 ## 系统要求
 
 - macOS 15.0 或更高版本。
 - 外接显示器需要支持 DDC/CI。
 - 使用键盘控制需要在“系统设置 → 隐私与安全性 → 辅助功能”中允许 DisplayMixer。
-- 使用分应用音量需要在“系统设置 → 隐私与安全性 → 屏幕录制”中允许 DisplayMixer。
 - 默认键盘设置下，DisplayMixer 使用媒体键事件控制 F1/F2 亮度；F3/F4 等功能键无需按住 Fn。
 
 ## 安装
 
-打开 Releases 页面下载 `DisplayMixer-1.1.0.dmg`，将 DisplayMixer 拖入“应用程序”文件夹后运行。
+打开 Releases 页面下载 `DisplayMixer-1.2.0.dmg`，将 DisplayMixer 拖入“应用程序”文件夹后运行。
 
-首次运行后，从菜单栏图标进入权限申请和功能设置。
+首次运行后，从菜单栏图标进入辅助功能权限申请和按键设置。
 
 ## 更新日志
+
+### v1.2.0（2026-09-18）
+
+- 移除分应用音量功能及屏幕录制权限申请，回到纯功能键接管工具。
+- 修复 F11 按到底停在 1% 到不了静音：到 0 自动进静音。
+- DDC 静音写音量 0（S2725QS 实测 0 即真静音、无回绕；0x8D 仅当兼容写）。
+- 修复静音下再按 F10 卡死：静音状态按 F10 解除静音并回到 2%。
+- 音量/静音改为单一写入口，修掉内存标记与设备脱节。
+- 静音/解静音每次都写设备（去掉按状态跳写），重复按 F11 幂等，不会再跳出 1% 底噪。
+- 静音位只在进出静音时写一次，平时调音量只写音量值，显示器 OSD 不再每按一次闪一次。
 
 ### v1.1.0
 
@@ -55,7 +64,7 @@ DisplayMixer 是一个 macOS 菜单栏工具，用来集中控制外接显示器
 
 ## 权限说明
 
-使用键盘控制需要在“系统设置 → 隐私与安全性 → 辅助功能”中允许 DisplayMixer；使用分应用音量需要授予屏幕录制权限。
+使用键盘控制需要在“系统设置 → 隐私与安全性 → 辅助功能”中允许 DisplayMixer。
 
 ## 构建
 
@@ -72,7 +81,7 @@ DisplayMixer 是一个 macOS 菜单栏工具，用来集中控制外接显示器
 
 DisplayMixer 的部分核心代码改编自以下开源项目，感谢这些项目作者和贡献者：
 
-- [MacMix](https://github.com/ljmng7/MacMix)：每应用音频混音引擎、CoreAudio 设备管理，以及部分 DDC/CI 和 IOKit/IOAV 传输代码。MacMix 采用 MIT License，相关保留声明见 [NOTICE](NOTICE)。
+- [MacMix](https://github.com/ljmng7/MacMix)：DDC/CI 和 IOKit/IOAV 传输代码的改编来源。MacMix 采用 MIT License，相关保留声明见 [NOTICE](NOTICE)。
 - [MonitorControl](https://github.com/MonitorControl/MonitorControl)：DDC/CI、MCCS 和显示器控制相关实现的参考来源。MonitorControl 采用 MIT License。
 
 项目中的改编代码保留了相应的版权和许可信息。更多来源说明见 [NOTICE](NOTICE)。

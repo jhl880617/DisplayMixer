@@ -5,16 +5,16 @@
 //  菜单栏图标 + 动态下拉菜单：
 //   - 每个外接显示器的亮度 / 音量（DDC/CI，解耦于音频路由）
 //   - 键盘媒体键（F1/F2 亮度、F10/F11/F12 静音/音量）映射到主显示器 DDC
-//   - 每个正在出声 App 的独立音量（CoreAudio 进程 Tap）
-//   - 屏幕录制权限入口（每 App 音量需要）、辅助功能权限入口（键盘控制需要）
+//   - 键盘媒体键接管：F1/F2 亮度、F10 静音开关、F11/F12 音量
+//   - 辅助功能权限入口（键盘控制需要）、开机自启、按键步进
 //   - 退出
 //
 //  设计说明：
 //   1. 启动即读取各显示器当前的真实亮度/音量，写入配置并同步菜单图标，保证软件与显示器一致。
 //      （不再做「不可读就置灰」的检测——直接控制显示器，读不到就由用户手动拖。）
 //   2. 菜单栏图标使用 Apple 系统音量符号，随「主显示器」音量大小变化（含静音斜杠）。
-//   3. 静音不再出现在菜单里，改由键盘 F10 映射到显示器 DDC 静音（VCP 0x8D）。
-//   4. 菜单打开时定时刷新：只显示在「运行且正在出声」的 App；App 关闭/停止出声后从列表消失。
+//   3. 音量语义：F11 按到 0 自动进静音；静音状态下按 F10 解除静音并回到 2%。
+//   4. 本工具只接管功能按键，不做分应用音量，不申请屏幕录制权限。
 //
 
 import AppKit
@@ -26,10 +26,6 @@ import ServiceManagement
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private let ddc = DDCController.shared
-    private let audio = AudioOrchestrator.shared
-
-    private enum PermissionState { case unknown, granted, denied }
-    private var permissionState: PermissionState = .unknown
 
     /// 键盘控制的目标显示器（主显示器）；nil 表示无外接屏，键盘事件放行给系统。
     private var primaryDisplay: ExternalDisplay?
@@ -42,12 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 主显示器是否可通过 CoreAudio 设备音量控制（选项 B）：有关联音频设备且支持音量。
     private var primaryVolumeCoreAudioSupported = false
 
-    /// 菜单打开时的实时刷新定时器
-    private var refreshTimer: Timer?
-    /// 是否正在拖动某个滑块（拖动期间不刷新菜单，避免打断）
+    /// 是否正在拖动某个滑块（拖动期间不重建菜单，避免打断）
     private var interacting = false
-    /// 上一次 App 列表/权限签名，用于判断是否需要刷新
-    private var lastAppSignature = ""
     /// 菜单当前是否处于打开状态（用于键盘改值时决定是否重建菜单）
     private var menuOpen = false
 
@@ -82,12 +74,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.menu?.delegate = self
         statusItem = item
 
-        // 每次启动检查录屏权限，避免沿用旧的内存状态。
-        Task { @MainActor in
-            permissionState = (await audio.hasPermission()) ? .granted : .denied
-            rebuild()
-        }
-
         // 启动即读取显示器真实亮度/音量并同步图标
         Task { @MainActor in
             self.syncDisplayValues()
@@ -108,21 +94,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         menuOpen = true
-        lastAppSignature = appSignature()
-        refreshTimer?.invalidate()
-        let timer = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.refresh()
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        refreshTimer = timer
     }
 
     func menuDidClose(_ menu: NSMenu) {
         menuOpen = false
-        refreshTimer?.invalidate()
-        refreshTimer = nil
         interacting = false
     }
 
@@ -150,38 +125,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(.separator())
             menu.addItem(launchAtLoginItem())
             menu.addItem(axRequestItem())
-            menu.addItem(screenCaptureRequestItem())
             menu.addItem(resyncItem())
             menu.addItem(axStatusItem())
-            menu.addItem(screenCaptureStatusItem())
             menu.addItem(.separator())
             menu.addItem(primaryTargetSubmenu())
             menu.addItem(keyboardToggleItem())
             menu.addItem(stepSubmenu())
-        }
-
-        menu.addItem(.separator())
-
-        // ---- App 音量 ----
-        menu.addItem(appHeader())
-        if !audio.isSupported {
-            let unsupported = NSMenuItem(
-                title: "系统不支持每 App 音量（需 macOS 14.4+）",
-                action: nil, keyEquivalent: ""
-            )
-            unsupported.isEnabled = false
-            menu.addItem(unsupported)
-        } else {
-            let apps = audio.runningApps()
-            if apps.isEmpty {
-                let none = NSMenuItem(title: "暂无 App 在播放声音", action: nil, keyEquivalent: "")
-                none.isEnabled = false
-                menu.addItem(none)
-            } else {
-                for app in apps {
-                    menu.addItem(appVolumeItem(app))
-                }
-            }
         }
 
         menu.addItem(.separator())
@@ -280,18 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let value = ConfigStore.shared.displayVolume(for: display.identity)
         addSlider(menu, title: "音量", value: value, continuous: true) { [weak self] v in
             guard let self else { return }
-            ConfigStore.shared.setDisplayVolume(display.identity, v)
-            // 动音量即视为取消静音
-            let wasMuted = self.primaryMuted
-            self.primaryMuted = false
-            let dev = CoreAudioVolume.shared.defaultOutputDevice()
-            if wasMuted {
-                self.setDisplayMute(display, muted: false, audioDevice: dev)
-            }
-            self.setDisplayVolume(display, fraction: v, audioDevice: dev)
-            if self.primaryDisplay?.identity == display.identity {
-                self.updateStatusIcon()
-            }
+            self.applyVolumeState(display, fraction: v, muted: v <= Self.muteEpsilon)
         }
     }
 
@@ -505,33 +443,85 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func kbdVolume(_ delta: Double) -> Bool {
         guard let d = keyboardTargetDisplay() else { return false }
-        let newV = clamp01(ConfigStore.shared.displayVolume(for: d.identity) + delta)
-        ConfigStore.shared.setDisplayVolume(d.identity, newV)
-        let wasMuted = primaryMuted
-        primaryMuted = false
-        // 选项 B：键盘音量走 CoreAudio 默认输出设备（即显示器音箱）。
-        let dev = CoreAudioVolume.shared.defaultOutputDevice()
-        // Unmute only when the previous state was actually muted. Calling the
-        // DDC mute command on every volume step causes duplicate 0x8D/0x62
-        // writes and makes some displays flash their hardware OSD.
-        if wasMuted {
-            setDisplayMute(d, muted: false, audioDevice: dev)
+        let stored = ConfigStore.shared.displayVolume(for: d.identity)
+        var newV = clamp01(stored + delta)
+        // 精度兜底：小步进在底部会有浮点残留，直接按到 0，保证 F11 能到底。
+        if delta < 0 && (stored <= 0.015 || newV < Self.muteEpsilon) {
+            newV = 0
         }
-        setDisplayVolume(d, fraction: newV, audioDevice: dev)
-        updateStatusIcon()
-        refreshMenuIfVisible()
+        // F11 按到 0 自动进静音；F12（newV > 0）自动解除静音。
+        // 键盘音量走 CoreAudio 默认输出设备（即显示器音箱）。
+        let muted = newV <= Self.muteEpsilon
+        if !muted && isEffectivelyMuted(d) && newV < Self.unmuteRestoreFraction {
+            // 静音中按 F12：直接回到 2% 保底可听，免得精细步进一次只加 1% 半天没声。
+            newV = Self.unmuteRestoreFraction
+        }
+        applyVolumeState(d, fraction: newV, muted: muted)
         return true
     }
 
     private func kbdMuteToggle() -> Bool {
         guard let d = keyboardTargetDisplay() else { return false }
-        primaryMuted.toggle()
-        let dev = CoreAudioVolume.shared.defaultOutputDevice()
-        setDisplayMute(d, muted: primaryMuted, audioDevice: dev)
-        ConfigStore.shared.setDisplayMuted(d.identity, primaryMuted)
-        updateStatusIcon()
-        refreshMenuIfVisible()
+        if isEffectivelyMuted(d) {
+            // 已是静音（F11 按到底那种也算静音）：按 F10 是解除静音，回到 2%。
+            let restore = max(ConfigStore.shared.displayVolume(for: d.identity), Self.unmuteRestoreFraction)
+            applyVolumeState(d, fraction: restore, muted: false)
+        } else {
+            applyVolumeState(d, fraction: ConfigStore.shared.displayVolume(for: d.identity), muted: true)
+        }
         return true
+    }
+
+    /// 音量 0 即静音的判定阈值；F10 解除静音后恢复的音量。
+    private static let muteEpsilon = 0.005
+    private static let unmuteRestoreFraction = 0.02
+
+    /// 当前是否算静音：内存标记、持久化标记、存量音量、设备真实静音位，四者任一成立即成立。
+    /// 用状态判定代替盲切 toggle，偶发脱节也不会把 F10 卡死在静音里。
+    private func isEffectivelyMuted(_ display: ExternalDisplay) -> Bool {
+        if primaryMuted || ConfigStore.shared.displayMuted(for: display.identity) {
+            return true
+        }
+        if ConfigStore.shared.displayVolume(for: display.identity) <= Self.muteEpsilon {
+            return true
+        }
+        if let dev = CoreAudioVolume.shared.defaultOutputDevice(),
+           CoreAudioVolume.shared.getMute(device: dev) == true {
+            return true
+        }
+        return false
+    }
+
+    /// 音量/静音唯一写入口：设备、持久化、内存标记、图标、菜单一次对齐。
+    /// 修掉以前「内存改了没落盘」「音量写了没动静音位」这类脱节。
+    private func applyVolumeState(_ display: ExternalDisplay, fraction: Double, muted: Bool) {
+        let v = clamp01(fraction)
+        let dev = CoreAudioVolume.shared.defaultOutputDevice()
+        let wasMuted = primaryMuted || ConfigStore.shared.displayMuted(for: display.identity)
+        if muted {
+            // 进入静音这一下写一次 0x62=0 + 0x8D；已经是静音时重复按 F11 不再写设备，不闪 OSD。
+            let storedZero = ConfigStore.shared.displayVolume(for: display.identity) <= Self.muteEpsilon
+            if !(wasMuted && storedZero) {
+                setDisplayVolume(display, fraction: 0, audioDevice: dev)
+                setDisplayMute(display, muted: true, audioDevice: dev, restoreVolume: 0)
+            }
+            ConfigStore.shared.setDisplayVolume(display.identity, 0)
+            ConfigStore.shared.setDisplayMuted(display.identity, true)
+            primaryMuted = true
+        } else {
+            // 只在“从静音出来”时写一次解静音位，平时调音量只写 0x62，不闪 OSD。
+            if wasMuted {
+                setDisplayMute(display, muted: false, audioDevice: dev, restoreVolume: v)
+            }
+            setDisplayVolume(display, fraction: v, audioDevice: dev)
+            ConfigStore.shared.setDisplayVolume(display.identity, v)
+            ConfigStore.shared.setDisplayMuted(display.identity, false)
+            primaryMuted = false
+        }
+        if primaryDisplay?.identity == display.identity {
+            updateStatusIcon()
+        }
+        refreshMenuIfVisible()
     }
 
     // MARK: - CoreAudio 音量（选项 B）封装
@@ -546,12 +536,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// 写显示器静音：同上，有 CoreAudio 设备走 CoreAudio Mute，否则回退 DDC 0x8D + 0x62 兜底。
-    private func setDisplayMute(_ display: ExternalDisplay, muted: Bool, audioDevice: AudioDeviceID?) {
+    private func setDisplayMute(_ display: ExternalDisplay, muted: Bool, audioDevice: AudioDeviceID?, restoreVolume: Double = 0) {
         if let dev = audioDevice, CoreAudioVolume.shared.supportsMute(device: dev) {
             _ = CoreAudioVolume.shared.setMute(device: dev, muted: muted)
         } else {
             ddc.setMute(display: display, muted: muted,
-                        restoreVolume: ConfigStore.shared.displayVolume(for: display.identity))
+                        restoreVolume: restoreVolume)
         }
     }
 
@@ -607,62 +597,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    // MARK: - App volume items
-
-    private func appHeader() -> NSMenuItem {
-        let item = NSMenuItem(title: "App 音量", action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        return item
-    }
-
-    private func appVolumeItem(_ app: AudioApp) -> NSMenuItem {
-        SliderMenuItem(
-            title: app.name,
-            value: app.volume,
-            continuous: true,
-            onChanged: { [weak self] v in
-                self?.audio.setVolume(bundleID: app.bundleID, fraction: v)
-            },
-            onInteraction: { [weak self] interacting in
-                self?.interacting = interacting
-            }
-        )
-    }
-
-    private func screenCaptureRequestItem() -> NSMenuItem {
-        let item = NSMenuItem(
-            title: "重新申请录屏",
-            action: #selector(requestPermission(_:)),
-            keyEquivalent: ""
-        )
-        item.target = self
-        return item
-    }
-
-    private func screenCaptureStatusItem() -> NSMenuItem {
-        let title: String
-        switch permissionState {
-        case .granted:
-            title = "录屏权限：已授予"
-        case .denied:
-            title = "录屏权限：未授予"
-        case .unknown:
-            title = "录屏权限：检测中"
-        }
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        return item
-    }
-
-    @objc private func requestPermission(_ sender: NSMenuItem) {
-        Task { @MainActor in
-            let granted = await audio.requestPermission()
-            permissionState = granted ? .granted : .denied
-            rebuild()
-        }
-        openPrivacySettings(anchor: "Privacy_ScreenCapture")
-    }
-
     // MARK: - Status icon
 
     /// 用 Apple 系统音量符号，按主显示器音量大小切换；静音显示斜杠。
@@ -670,10 +604,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let button = statusItem?.button else { return }
         let vol = primaryVolumeFraction()
         let name: String
-        if primaryMuted {
+        if primaryMuted || vol <= Self.muteEpsilon {
             name = "speaker.slash.fill"
-        } else if vol <= 0.001 {
-            name = "speaker.fill"
         } else if vol < 0.34 {
             name = "speaker.wave.1.fill"
         } else if vol < 0.67 {
@@ -694,25 +626,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Live refresh
 
-    private func refresh() {
-        guard !interacting else { return }
-        let sig = appSignature()
-        if sig != lastAppSignature {
-            lastAppSignature = sig
-            rebuild()
-        }
-    }
-
     private func refreshMenuIfVisible() {
         if menuOpen {
             rebuild()
         }
-    }
-
-    private func appSignature() -> String {
-        guard audio.isSupported else { return "unsupported|\(permissionState)" }
-        let apps = audio.runningApps().map { $0.bundleID }.sorted().joined(separator: ",")
-        return "\(apps)|\(permissionState)"
     }
 
     private func rebuild() {
